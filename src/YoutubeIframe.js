@@ -1,13 +1,13 @@
 import React, {
   useRef,
-  useState,
+  useMemo,
   useEffect,
   forwardRef,
   useCallback,
   useImperativeHandle,
-  useMemo,
 } from 'react';
-import {View, StyleSheet, Platform} from 'react-native';
+import {Platform, StyleSheet, View} from 'react-native';
+import {EventEmitter} from 'events';
 import {WebView} from './WebView';
 import {
   PLAYER_ERROR,
@@ -15,13 +15,13 @@ import {
   DEFAULT_BASE_URL,
   CUSTOM_USER_AGENT,
 } from './constants';
-import {EventEmitter} from 'events';
 import {
   playMode,
   soundMode,
   MAIN_SCRIPT,
   PLAYER_FUNCTIONS,
 } from './PlayerScripts';
+import {deepComparePlayList} from './utils';
 
 const YoutubeIframe = (props, ref) => {
   const {
@@ -41,7 +41,7 @@ const YoutubeIframe = (props, ref) => {
     onError = _err => {},
     onReady = _event => {},
     playListStartIndex = 0,
-    initialPlayerParams = {},
+    initialPlayerParams,
     allowWebViewZoom = false,
     forceAndroidAutoplay = false,
     onChangeState = _event => {},
@@ -50,9 +50,13 @@ const YoutubeIframe = (props, ref) => {
     onPlaybackRateChange = _playbackRate => {},
   } = props;
 
+  const playerReady = useRef(false);
+  const lastVideoIdRef = useRef(videoId);
+  const lastPlayListRef = useRef(playList);
+  const initialPlayerParamsRef = useRef(initialPlayerParams || {});
+
   const webViewRef = useRef(null);
   const eventEmitter = useRef(new EventEmitter());
-  const [playerReady, setPlayerReady] = useState(false);
 
   useImperativeHandle(
     ref,
@@ -113,7 +117,8 @@ const YoutubeIframe = (props, ref) => {
   );
 
   useEffect(() => {
-    if (!playerReady) {
+    if (!playerReady.current) {
+      // no instance of player is ready
       return;
     }
 
@@ -123,7 +128,40 @@ const YoutubeIframe = (props, ref) => {
       PLAYER_FUNCTIONS.setVolume(volume),
       PLAYER_FUNCTIONS.setPlaybackRate(playbackRate),
     ].forEach(webViewRef.current.injectJavaScript);
-  }, [play, playerReady, mute, volume, playbackRate]);
+  }, [play, mute, volume, playbackRate]);
+
+  useEffect(() => {
+    if (!playerReady.current || lastVideoIdRef.current === videoId) {
+      // no instance of player is ready
+      // or videoId has not changed
+      return;
+    }
+
+    lastVideoIdRef.current = videoId;
+
+    webViewRef.current.injectJavaScript(
+      PLAYER_FUNCTIONS.loadVideoById(videoId, play),
+    );
+  }, [videoId, play]);
+
+  useEffect(() => {
+    if (!playerReady.current) {
+      // no instance of player is ready
+      return;
+    }
+
+    // Also, right now, we are helping users by doing "deep" comparisons of playList prop,
+    // but in the next major we should leave the responsibility to user (either via useMemo or moving the array outside)
+    if (!playList || deepComparePlayList(lastPlayListRef.current, playList)) {
+      return;
+    }
+
+    lastPlayListRef.current = playList;
+
+    webViewRef.current.injectJavaScript(
+      PLAYER_FUNCTIONS.loadPlaylist(playList, playListStartIndex, play),
+    );
+  }, [playList, play, playListStartIndex]);
 
   const onWebMessage = useCallback(
     event => {
@@ -139,16 +177,7 @@ const YoutubeIframe = (props, ref) => {
             break;
           case 'playerReady':
             onReady();
-            setPlayerReady(true);
-            if (Array.isArray(playList)) {
-              webViewRef.current.injectJavaScript(
-                PLAYER_FUNCTIONS.loadPlaylist(
-                  playList,
-                  playListStartIndex,
-                  play,
-                ),
-              );
-            }
+            playerReady.current = true;
             break;
           case 'playerQualityChange':
             onPlaybackQualityChange(message.data);
@@ -164,17 +193,14 @@ const YoutubeIframe = (props, ref) => {
             break;
         }
       } catch (error) {
-        console.warn(error);
+        console.warn('[rn-youtube-iframe]', error);
       }
     },
     [
-      play,
       onReady,
       onError,
-      playList,
       onChangeState,
       onFullScreenChange,
-      playListStartIndex,
       onPlaybackRateChange,
       onPlaybackQualityChange,
     ],
@@ -184,7 +210,10 @@ const YoutubeIframe = (props, ref) => {
     request => {
       try {
         const url = request.mainDocumentURL || request.url;
-        return url?.startsWith(baseUrlOverride || DEFAULT_BASE_URL);
+        const iosFirstLoad = Platform.OS === 'ios' && url === 'about:blank';
+        const shouldLoad =
+          iosFirstLoad || url?.startsWith(baseUrlOverride || DEFAULT_BASE_URL);
+        return shouldLoad;
       } catch (error) {
         // defaults to true in case of error
         // returning false stops the video from loading
@@ -196,9 +225,9 @@ const YoutubeIframe = (props, ref) => {
 
   const source = useMemo(() => {
     const ytScript = MAIN_SCRIPT(
-      videoId,
-      playList,
-      initialPlayerParams,
+      lastVideoIdRef.current,
+      lastPlayListRef.current,
+      initialPlayerParamsRef.current,
       allowWebViewZoom,
       contentScale,
     );
@@ -215,15 +244,7 @@ const YoutubeIframe = (props, ref) => {
     const data = ytScript.urlEncodedJSON;
 
     return {uri: base + '?data=' + data};
-  }, [
-    videoId,
-    playList,
-    useLocalHTML,
-    contentScale,
-    baseUrlOverride,
-    allowWebViewZoom,
-    initialPlayerParams,
-  ]);
+  }, [useLocalHTML, contentScale, baseUrlOverride, allowWebViewZoom]);
 
   return (
     <View style={{height, width}}>
@@ -234,7 +255,9 @@ const YoutubeIframe = (props, ref) => {
         style={[styles.webView, webViewStyle]}
         mediaPlaybackRequiresUserAction={false}
         onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
-        allowsFullscreenVideo={!initialPlayerParams?.preventFullScreen}
+        allowsFullscreenVideo={
+          !initialPlayerParamsRef.current.preventFullScreen
+        }
         userAgent={
           forceAndroidAutoplay
             ? Platform.select({android: CUSTOM_USER_AGENT, ios: ''})
@@ -246,7 +269,7 @@ const YoutubeIframe = (props, ref) => {
         {...webViewProps}
         // --
 
-        //add props that should not be allowed to be overridden below
+        // add props that should not be allowed to be overridden below
         source={source}
         ref={webViewRef}
         onMessage={onWebMessage}
