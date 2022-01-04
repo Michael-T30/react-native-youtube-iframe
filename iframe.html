@@ -65,7 +65,7 @@
       }
 
       if (!allowWebViewZoom) {
-        metaString += `maximum-scale=${1}`; //contentScale_s
+        metaString += `maximum-scale=${contentScale_s}`;
       }
 
       const viewport = document.querySelector('meta[name=viewport]');
