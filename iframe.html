@@ -64,9 +64,9 @@
         metaString += `initial-scale=${contentScale_s}, `;
       }
 
-//       if (!allowWebViewZoom) {
+      if (!allowWebViewZoom) {
         metaString += `maximum-scale=${1}`; //contentScale_s
-//       }
+      }
 
       const viewport = document.querySelector('meta[name=viewport]');
       viewport.setAttribute('content', 'width=device-width, ' + metaString);
